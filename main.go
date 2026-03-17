@@ -7,6 +7,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -22,6 +23,7 @@ import (
 	"github.com/ethereum/go-ethereum/triedb"
 	"github.com/ethereum/go-ethereum/triedb/hashdb"
 	"github.com/ethereum/go-ethereum/triedb/pathdb"
+	"gopkg.in/yaml.v3"
 )
 
 // Patch represents a single storage slot modification.
@@ -67,24 +69,75 @@ func parsePatch(raw string) (Patch, error) {
 	}, nil
 }
 
+// loadPatchFile loads patches from a JSON or YAML file.
+// Format: { "0xAddr": { "0xSlot": "0xValue", ... }, ... }
+func loadPatchFile(path string) ([]Patch, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read file: %w", err)
+	}
+
+	// map[address]map[slot]value
+	var raw map[string]map[string]string
+
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".json":
+		if err := json.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parse JSON: %w", err)
+		}
+	case ".yaml", ".yml":
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parse YAML: %w", err)
+		}
+	default:
+		return nil, fmt.Errorf("unsupported file extension %q (use .json, .yaml, or .yml)", ext)
+	}
+
+	var patches []Patch
+	for addrHex, slots := range raw {
+		if !common.IsHexAddress(addrHex) {
+			return nil, fmt.Errorf("invalid address in file: %s", addrHex)
+		}
+		addr := common.HexToAddress(addrHex)
+		for slotHex, valHex := range slots {
+			patches = append(patches, Patch{
+				Address: addr,
+				Slot:    common.HexToHash(slotHex),
+				Value:   common.HexToHash(valHex),
+			})
+		}
+	}
+	return patches, nil
+}
+
 func main() {
 	var (
-		datadir string
-		sets    setFlags
-		dryRun  bool
+		datadir   string
+		sets      setFlags
+		patchFile string
+		dryRun    bool
 	)
 	flag.StringVar(&datadir, "datadir", "", "geth data directory (required)")
 	flag.Var(&sets, "set", "storage patch: 0xAddr:0xSlot=0xValue (repeatable)")
+	flag.StringVar(&patchFile, "file", "", "patch file in JSON or YAML format")
 	flag.BoolVar(&dryRun, "dry-run", false, "validate inputs only, do not modify database")
 	flag.Parse()
 
-	if datadir == "" || len(sets) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: state-patcher --datadir <path> --set 0xAddr:0xSlot=0xValue [...]\n\n")
+	if datadir == "" || (len(sets) == 0 && patchFile == "") {
+		fmt.Fprintf(os.Stderr, "Usage: state-patcher --datadir <path> [--set 0xAddr:0xSlot=0xValue ...] [--file patch.json|patch.yaml]\n\n")
 		flag.PrintDefaults()
 		os.Exit(1)
 	}
 
 	var patches []Patch
+	if patchFile != "" {
+		fp, err := loadPatchFile(patchFile)
+		if err != nil {
+			log.Fatalf("bad --file %q: %v", patchFile, err)
+		}
+		patches = append(patches, fp...)
+	}
 	for _, s := range sets {
 		p, err := parsePatch(s)
 		if err != nil {
