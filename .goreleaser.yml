@@ -1,0 +1,22 @@
+version: 2
+
+builds:
+  - id: state-patcher
+    main: .
+    binary: state-patcher
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - format: binary
+
+changelog:
+  sort: asc
