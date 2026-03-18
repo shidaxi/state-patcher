@@ -1,9 +1,6 @@
 // state-patcher modifies contract storage slots in a geth PebbleDB database.
 //
-// Built against go-ethereum v1.14.12. When upgrading to v1.15+, note:
-//   - v1.15+: TD (total difficulty) functions removed — remove ReadTd/WriteTd/DeleteTd calls
-//   - v1.17+: StateDB.Commit gains a 3rd param (noStorageWiping bool)
-//   - v1.17+: ReadHeaderNumber returns (uint64, bool) instead of *uint64
+// Built against go-ethereum v1.16.8. Supports both hash and path (PBSS) state schemes.
 package main
 
 import (
@@ -188,11 +185,10 @@ func patchState(datadir string, patches []Patch) error {
 	if oldHash == (common.Hash{}) {
 		return fmt.Errorf("head block hash not found in database")
 	}
-	numPtr := rawdb.ReadHeaderNumber(db, oldHash)
-	if numPtr == nil {
+	num, ok := rawdb.ReadHeaderNumber(db, oldHash)
+	if !ok {
 		return fmt.Errorf("block number not found for hash %s", oldHash)
 	}
-	num := *numPtr
 	header := rawdb.ReadHeader(db, oldHash, num)
 	if header == nil {
 		return fmt.Errorf("header not found: hash=%s num=%d", oldHash, num)
@@ -239,7 +235,7 @@ func patchState(datadir string, patches []Patch) error {
 	// ----------------------------------------------------------------
 	// 5. Commit state → new state root
 	// ----------------------------------------------------------------
-	newRoot, err := stateDB.Commit(num, false)
+	newRoot, err := stateDB.Commit(num, false, true)
 	if err != nil {
 		return fmt.Errorf("commit state: %w", err)
 	}
@@ -279,12 +275,6 @@ func patchState(datadir string, patches []Patch) error {
 		rawdb.WriteBody(db, newHash, num, body)
 	}
 
-	// Total difficulty
-	td := rawdb.ReadTd(db, oldHash, num)
-	if td != nil {
-		rawdb.WriteTd(db, newHash, num, td)
-	}
-
 	// ----------------------------------------------------------------
 	// 8. Update canonical hash and head pointers
 	// ----------------------------------------------------------------
@@ -297,7 +287,6 @@ func patchState(datadir string, patches []Patch) error {
 	// ----------------------------------------------------------------
 	rawdb.DeleteHeader(db, oldHash, num)
 	rawdb.DeleteBody(db, oldHash, num)
-	rawdb.DeleteTd(db, oldHash, num)
 
 	fmt.Println("block data re-keyed successfully")
 	return nil
